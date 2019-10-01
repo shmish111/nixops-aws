@@ -39,6 +39,8 @@ class VPCRouteTableAssociationState(nixops.resources.DiffEngineResourceState, EC
 
     def __init__(self, depl, name, id):
         nixops.resources.DiffEngineResourceState.__init__(self, depl, name, id)
+        self._session = None
+        self._client = None
         self._state = StateDict(depl, id)
         self.region = self._state.get('region', None)
         self.handle_associate_route_table = Handler(['region', 'routeTableId', 'subnetId'], handle=self.realize_associate_route_table)
@@ -60,6 +62,12 @@ class VPCRouteTableAssociationState(nixops.resources.DiffEngineResourceState, EC
 
     def get_definition_prefix(self):
         return "resources.vpcRouteTableAssociations."
+
+    def _connect(self):
+        if self._session: return
+        assert self._state["region"]
+        self._session = nixopsaws.ec2_utils.connect(self._state["region"], self.access_key_id)
+        self._client = self._session.client('ec2')
 
     def create_after(self, resources, defn):
         return {r for r in resources if
@@ -88,7 +96,8 @@ class VPCRouteTableAssociationState(nixops.resources.DiffEngineResourceState, EC
             subnet_id = res._state['subnetId']
 
         self.log("associating route table {0} to subnet {1}".format(route_table_id, subnet_id))
-        association = self.get_client().associate_route_table(RouteTableId=route_table_id,
+        self._connect()
+        association = self._client.associate_route_table(RouteTableId=route_table_id,
                                                          SubnetId=subnet_id)
 
         with self.depl._db:
@@ -101,7 +110,8 @@ class VPCRouteTableAssociationState(nixops.resources.DiffEngineResourceState, EC
         if self.state != self.UP: return
         self.log("disassociating route table {0} from subnet {1}".format(self._state['routeTableId'], self._state['subnetId']))
         try:
-            self.get_client().disassociate_route_table(AssociationId=self._state['associationId'])
+            self._connect()
+            self._client.disassociate_route_table(AssociationId=self._state['associationId'])
         except botocore.exceptions.ClientError as error:
             if error.response['Error']['Code'] == "InvalidAssociationID.NotFound":
                 self.warn("route table {} was already deleted".format(self._state['associationId']))

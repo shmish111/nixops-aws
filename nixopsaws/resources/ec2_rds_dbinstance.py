@@ -72,7 +72,8 @@ class EC2RDSDbInstanceState(nixops.resources.ResourceState):
 
     def __init__(self, depl, name, id):
         super(EC2RDSDbInstanceState, self).__init__(depl, name, id)
-        self._conn = None
+        self._session = None
+        self._client = None
 
     def show_type(self):
         s = super(EC2RDSDbInstanceState, self).show_type()
@@ -208,9 +209,7 @@ class EC2RDSDbInstanceState(nixops.resources.ResourceState):
 
     def create(self, defn, check, allow_reboot, allow_recreate):
         with self.depl._db:
-            self.access_key_id = defn.access_key_id or nixopsaws.ec2_utils.get_access_key_id()
-            if not self.access_key_id:
-                raise Exception("please set ‘accessKeyId’, $EC2_ACCESS_KEY or $AWS_ACCESS_KEY_ID")
+            self.access_key_id = nixopsaws.ec2_utils.get_access_key_id(defn.config)
 
             if self._exists():
                 self._assert_invariants(defn)
@@ -266,7 +265,7 @@ class EC2RDSDbInstanceState(nixops.resources.ResourceState):
                     self._wait_for_dbinstance(dbinstance)
 
                 self.region = defn.region
-                self.access_key_id = defn.access_key_id or nixopsaws.ec2_utils.get_access_key_id()
+                self.access_key_id = nixopsaws.ec2_utils.get_access_key_id(defn.config)
                 self.rds_dbinstance_db_name = defn.rds_dbinstance_db_name
                 self.rds_dbinstance_master_password = defn.rds_dbinstance_master_password
                 self._copy_dbinstance_attrs(dbinstance, defn.rds_dbinstance_security_groups)

@@ -40,6 +40,8 @@ class VPCRouteState(nixops.resources.DiffEngineResourceState, EC2CommonState):
 
     def __init__(self, depl, name, id):
         nixops.resources.DiffEngineResourceState.__init__(self, depl, name, id)
+        self._session = None
+        self._client = None
         self._state = StateDict(depl, id)
         self.region = self._state.get('region', None)
         keys = ['region', 'routeTableId', 'destinationCidrBlock', 'destinationIpv6CidrBlock',
@@ -61,6 +63,12 @@ class VPCRouteState(nixops.resources.DiffEngineResourceState, EC2CommonState):
 
     def get_definition_prefix(self):
         return "resources.vpcRoutes."
+
+    def _connect(self):
+        if self._session: return
+        assert self._state["region"]
+        self._session = nixopsaws.ec2_utils.connect(self._state["region"], self.access_key_id)
+        self._client = self._session.client('ec2')
 
     def create_after(self, resources, defn):
         return {r for r in resources if
@@ -118,7 +126,8 @@ class VPCRouteState(nixops.resources.DiffEngineResourceState, EC2CommonState):
         route[self.upper(destination)] = config[destination]
 
         self.log("creating route {0} => {1} in route table {2}".format(retrieve_defn(target), config[destination], rtb_id))
-        self.get_client().create_route(**route)
+        self._connect()
+        self._client.create_route(**route)
 
         with self.depl._db:
             self.state = self.UP
@@ -137,7 +146,8 @@ class VPCRouteState(nixops.resources.DiffEngineResourceState, EC2CommonState):
             args = dict()
             args[self.upper(destination)] = self._state[destination]
             args['RouteTableId'] = self._state['routeTableId']
-            self.get_client().delete_route(**args)
+            self._connect()
+            self._client.delete_route(**args)
         except botocore.exceptions.ClientError as error:
             if error.response['Error']['Code'] == "InvalidRoute.NotFound":
                 self.warn("route was already deleted")

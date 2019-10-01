@@ -70,7 +70,7 @@ class ElasticFileSystemMountTargetState(nixops.resources.ResourceState, efs_comm
 
     def create(self, defn, check, allow_reboot, allow_recreate):
 
-        access_key_id = defn.config["accessKeyId"] or nixopsaws.ec2_utils.get_access_key_id()
+        access_key_id = nixopsaws.ec2_utils.get_access_key_id(defn.config)
         region = defn.config["region"]
         client = self._get_client(access_key_id, region)
 

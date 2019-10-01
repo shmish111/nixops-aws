@@ -51,16 +51,9 @@ class EC2CommonState():
         '''
 
         cfg = self.get_defn()
+        # TODO: what is new_access_key_id???
+        self.access_key_id = new_access_key_id = nixopsaws.ec2_utils.get_access_key_id(cfg)
 
-        if 'accessKeyId' in cfg:
-            new_access_key_id = cfg['accessKeyId']
-        else:
-            new_access_key_id = nixopsaws.ec2_utils.get_access_key_id()
-
-        if new_access_key_id is not None:
-            self.access_key_id = new_access_key_id
-        if self.access_key_id is None:
-            raise Exception("please set 'accessKeyId', $EC2_ACCESS_KEY or $AWS_ACCESS_KEY_ID")
         if hasattr(self, '_client'):
             if self._client: return self._client
         assert self._state['region']

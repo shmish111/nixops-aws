@@ -31,6 +31,7 @@ class EC2PlacementGroupDefinition(nixops.resources.ResourceDefinition):
 class EC2PlacementGroupState(nixops.resources.ResourceState):
     """State of an EC2 placement group."""
 
+    # FIXME: doesn't have config like ec2
     region = nixops.util.attr_property("ec2.region", None)
     placement_group_name = nixops.util.attr_property("ec2.placementGroupName", None)
     placement_group_strategy = nixops.util.attr_property("ec2.placementGroupStrategy", None)
@@ -43,7 +44,8 @@ class EC2PlacementGroupState(nixops.resources.ResourceState):
 
     def __init__(self, depl, name, id):
         super(EC2PlacementGroupState, self).__init__(depl, name, id)
-        self._conn = None
+        self._session = None
+        self._client = None
 
     def show_type(self):
         s = super(EC2PlacementGroupState, self).show_type()
@@ -73,7 +75,7 @@ class EC2PlacementGroupState(nixops.resources.ResourceState):
 
         with self.depl._db:
             self.region = defn.region
-            self.access_key_id = defn.access_key_id or nixopsaws.ec2_utils.get_access_key_id()
+            self.access_key_id = nixopsaws.ec2_utils.get_access_key_id(defn.config)
             self.placement_group_name = defn.placement_group_name
             self.placement_group_strategy = defn.placement_group_strategy
 

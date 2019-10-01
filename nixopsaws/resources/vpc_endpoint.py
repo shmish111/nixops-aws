@@ -32,6 +32,8 @@ class VPCEndpointState(nixops.resources.DiffEngineResourceState, EC2CommonState)
     def __init__(self, depl, name, id):
         nixops.resources.DiffEngineResourceState.__init__(self, depl, name, id)
         self._state = StateDict(depl, id)
+        self._session = None
+        self._client = None
         self.handle_create_endpoint = Handler(['region', 'serviceName', 'vpcId'], handle=self.realize_create_endpoint)
         self.handle_modify_endpoint = Handler(['policy', 'routeTableIds'],
                 after=[self.handle_create_endpoint],
@@ -55,6 +57,12 @@ class VPCEndpointState(nixops.resources.DiffEngineResourceState, EC2CommonState)
 
     def get_defintion_prefix(self):
         return "resources.vpcEndpoints"
+
+    def _connect(self):
+        if self._session: return
+        assert self._state["region"]
+        self._session = nixopsaws.ec2_utils.connect(self._state["region"], self.access_key_id)
+        self._client = self._session.client('ec2')
 
     def create_after(self, resources, defn):
         return {r for r in resources if
@@ -83,7 +91,8 @@ class VPCEndpointState(nixops.resources.DiffEngineResourceState, EC2CommonState)
             self._state['creationToken'] = str(uuid.uuid4())
             self.state = self.STARTING
 
-        response = self.get_client().create_vpc_endpoint(
+        self._connect()
+        response = self._client.create_vpc_endpoint(
             ClientToken=self._state['creationToken'],
             ServiceName=config['serviceName'],
             VpcId=vpc_id)
@@ -115,7 +124,8 @@ class VPCEndpointState(nixops.resources.DiffEngineResourceState, EC2CommonState)
         if config['policy'] is not None: edp_input['PolicyDocument'] = config['policy']
         edp_input['VpcEndpointId'] = self._state['endpointId']
 
-        self.get_client().modify_vpc_endpoint(**edp_input)
+        self._connect()
+        self._client.modify_vpc_endpoint(**edp_input)
 
         with self.depl._db:
             self._state['policy'] = config['policy']
@@ -125,7 +135,8 @@ class VPCEndpointState(nixops.resources.DiffEngineResourceState, EC2CommonState)
         if self.state != self.UP: return
         try:
             self.log("deleting vpc endpoint {}".format(self._state['endpointId']))
-            self.get_client().delete_vpc_endpoints(VpcEndpointIds=[self._state['endpointId']])
+            self._connect()
+            self._client.delete_vpc_endpoints(VpcEndpointIds=[self._state['endpointId']])
         except botocore.exceptions.ClientError as e:
             if e.response['Error']['Code'] == 'InvalidVpcEndpointId.NotFound':
                 self.warn("vpc endpoint {} was already deleted".format(self._state['endpointId']))

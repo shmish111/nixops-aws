@@ -76,7 +76,7 @@ class AWSVPNConnectionState(nixops.resources.DiffEngineResourceState, EC2CommonS
             vpn_conn_id = res._state['vpnConnectionId']
 
         self.log("creating route to {0} using vpn connection {1}".format(config['destinationCidrBlock'], vpn_conn_id))
-        self.get_client().create_vpn_connection_route(
+        self._client.create_vpn_connection_route(
             DestinationCidrBlock=config['destinationCidrBlock'],
             VpnConnectionId=vpn_conn_id)
 
@@ -89,7 +89,7 @@ class AWSVPNConnectionState(nixops.resources.DiffEngineResourceState, EC2CommonS
         if self.state != self.UP: return
         self.log("deleting route to {}".format(self._state['destinationCidrBlock']))
         try:
-            self.get_client().delete_vpn_connection_route(
+            self._client.delete_vpn_connection_route(
                 DestinationCidrBlock=self._state['destinationCidrBlock'],
                 VpnConnectionId=self._state['vpnConnectionId'])
         except botocore.exceptions.ClientError as e:

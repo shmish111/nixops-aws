@@ -131,9 +131,7 @@ class Route53HealthCheckState(nixops.resources.ResourceState):
         return cfg
 
     def create(self, defn, check, allow_reboot, allow_recreate):
-        self.access_key_id = defn.access_key_id or nixopsaws.ec2_utils.get_access_key_id()
-        if not (self.access_key_id or os.environ['AWS_ACCESS_KEY_ID']):
-            raise Exception("please set ‘accessKeyId’ or $AWS_ACCESS_KEY_ID")
+        self.access_key_id = nixopsaws.ec2_utils.get_access_key_id(defn.config)
 
         client = self.boto_session().client("route53")
 

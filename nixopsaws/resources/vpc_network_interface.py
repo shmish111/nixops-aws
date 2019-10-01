@@ -40,6 +40,8 @@ class VPCNetworkInterfaceState(nixops.resources.DiffEngineResourceState, EC2Comm
     def __init__(self, depl, name, id):
         nixops.resources.DiffEngineResourceState.__init__(self, depl, name, id)
         self._state = StateDict(depl, id)
+        self._session = None
+        self._client = None
         self.region = self._state.get('region', None)
         self.handle_create_eni = Handler(['region', 'subnetId', 'primaryPrivateIpAddress',
                                           'privateIpAddresses', 'secondaryPrivateIpAddressCount'],
@@ -67,6 +69,12 @@ class VPCNetworkInterfaceState(nixops.resources.DiffEngineResourceState, EC2Comm
     def get_definition_prefix(self):
         return "resources.vpcNetworkInterfaces."
 
+    def _connect(self):
+        if self._session: return
+        assert self._state["region"]
+        self._session = nixopsaws.ec2_utils.connect(self._state["region"], self.access_key_id)
+        self._client = self._session.client('ec2')
+
     def create_after(self, resources, defn):
         return {r for r in resources if
                 isinstance(r, nixopsaws.resources.vpc_subnet.VPCSubnetState)}
@@ -84,7 +92,8 @@ class VPCNetworkInterfaceState(nixops.resources.DiffEngineResourceState, EC2Comm
 
         eni_input = self.network_interface_input(config)
         self.log("creating vpc network interface under {}".format(eni_input['SubnetId']))
-        response = self.get_client().create_network_interface(**eni_input)
+        self._connect()
+        response = self._client.create_network_interface(**eni_input)
 
         eni = response['NetworkInterface']
 
@@ -149,7 +158,8 @@ class VPCNetworkInterfaceState(nixops.resources.DiffEngineResourceState, EC2Comm
     def realize_modify_eni_attrs(self, allow_recreate):
         config = self.get_defn()
         self.log("applying network interface attribute changes")
-        self.get_client().modify_network_interface_attribute(NetworkInterfaceId=self._state['networkInterfaceId'],
+        self._connect()
+        self._client.modify_network_interface_attribute(NetworkInterfaceId=self._state['networkInterfaceId'],
                                                         Description={'Value':config['description']})
         groups = []
         for grp in config['securityGroups']:
@@ -161,11 +171,11 @@ class VPCNetworkInterfaceState(nixops.resources.DiffEngineResourceState, EC2Comm
                 groups.append(grp)
 
         if len(groups) >= 1:
-            self.get_client().modify_network_interface_attribute(
+            self._client.modify_network_interface_attribute(
                 NetworkInterfaceId=self._state['networkInterfaceId'],
                 Groups=groups)
 
-        self.get_client().modify_network_interface_attribute(NetworkInterfaceId=self._state['networkInterfaceId'],
+        self._client.modify_network_interface_attribute(NetworkInterfaceId=self._state['networkInterfaceId'],
                                                         SourceDestCheck={
                                                             'Value':config['sourceDestCheck']
                                                             })
@@ -178,13 +188,15 @@ class VPCNetworkInterfaceState(nixops.resources.DiffEngineResourceState, EC2Comm
         config = self.get_defn()
         tags = config['tags']
         tags.update(self.get_common_tags())
-        self.get_client().create_tags(Resources=[self._state['networkInterfaceId']], Tags=[{"Key": k, "Value": tags[k]} for k in tags])
+        self._connect()
+        self._client.create_tags(Resources=[self._state['networkInterfaceId']], Tags=[{"Key": k, "Value": tags[k]} for k in tags])
 
     def _destroy(self):
         if self.state != self.UP: return
         self.log("deleting vpc network interface {}".format(self._state['networkInterfaceId']))
         try:
-            self.get_client().delete_network_interface(NetworkInterfaceId=self._state['networkInterfaceId'])
+            self._connect()
+            self._client.delete_network_interface(NetworkInterfaceId=self._state['networkInterfaceId'])
         except botocore.exceptions.ClientError as e:
             if e.response['Error']['Code'] == "InvalidNetworkInterfaceID.NotFound":
                 self.warn("network interface {} was already deleted".format(self._state['networkInterfaceId']))

@@ -73,7 +73,7 @@ class IAMRoleState(nixops.resources.ResourceState):
         return "resources.iamRoles."
 
 
-    def connect(self):
+    def _connect(self):
         if self._conn: return
         (access_key_id, secret_access_key) = nixopsaws.ec2_utils.fetch_aws_secret_key(self.access_key_id)
         self._conn = boto.connect_iam(
@@ -82,7 +82,7 @@ class IAMRoleState(nixops.resources.ResourceState):
 
     def _destroy(self):
         if self.state != self.UP: return
-        self.connect()
+        self._connect()
 
         try:
             try:
@@ -201,11 +201,9 @@ class IAMRoleState(nixops.resources.ResourceState):
 
     def create(self, defn, check, allow_reboot, allow_recreate):
 
-        self.access_key_id = defn.access_key_id or nixopsaws.ec2_utils.get_access_key_id()
-        if not self.access_key_id:
-            raise Exception("please set ‘accessKeyId’, $EC2_ACCESS_KEY or $AWS_ACCESS_KEY_ID")
+        self.access_key_id = nixopsaws.ec2_utils.get_access_key_id(defn.config)
 
-        self.connect()
+        self._connect()
 
         ip = self._get_instance_profile(defn.role_name, True)
         rp = self._get_role_policy(defn.role_name, True)

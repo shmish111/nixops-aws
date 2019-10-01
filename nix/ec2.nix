@@ -279,6 +279,14 @@ in
       '';
     };
 
+    deployment.ec2.vpcId = mkOption {
+      default = "";
+      type = types.str;
+      description = ''
+        EC2 VPC ID
+      '';
+    };
+
     deployment.ec2.instanceProfile = mkOption {
       default = "";
       example = "rolename";

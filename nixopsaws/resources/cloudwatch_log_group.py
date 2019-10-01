@@ -2,8 +2,8 @@
 
 # Automatic provisioning of AWS cloudwatch log groups.
 
-import boto
-import boto.logs
+import boto3
+from botocore.exceptions import ClientError
 import nixops.util
 import nixops.resources
 import nixopsaws.ec2_utils
@@ -37,7 +37,8 @@ class CloudWatchLogGroupState(nixops.resources.ResourceState):
 
     def __init__(self, depl, name, id):
         nixops.resources.ResourceState.__init__(self, depl, name, id)
-        self._conn = None
+        self._session = None
+        self._client = None
 
     def show_type(self):
         s = super(CloudWatchLogGroupState, self).show_type()
@@ -57,21 +58,21 @@ class CloudWatchLogGroupState(nixops.resources.ResourceState):
     def get_definition_prefix(self):
         return "resources.cloudwatchLogGroups."
 
-    def connect(self):
-        if self._conn: return
+    def _connect(self):
+        if self._session: return
         assert self.region
-        (access_key_id, secret_access_key) = nixopsaws.ec2_utils.fetch_aws_secret_key(self.access_key_id)
-        self._conn = boto.logs.connect_to_region(
-            region_name=self.region, aws_access_key_id=access_key_id, aws_secret_access_key=secret_access_key)
+        self._session = nixopsaws.ec2_utils.connect(self.region, self.access_key_id)
+        self._client = self._session.client('logs')
 
     def _destroy(self):
         if self.state != self.UP: return
-        self.connect()
+        self._connect()
         self.log("destroying cloudwatch log group ‘{0}’...".format(self.log_group_name))
         try:
-         self._conn.delete_log_group(self.log_group_name)
-        except  boto.logs.exceptions.ResourceNotFoundException, e:
-            self.log("the log group ‘{0}’ was already deleted".format(self.log_group_name))
+         self._client.delete_log_group(logGroupName=self.log_group_name)
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ResourceNotFoundException':
+                self.log("the log group ‘{0}’ was already deleted".format(self.log_group_name))
         with self.depl._db:
             self.state = self.MISSING
             self.log_group_name = None
@@ -81,7 +82,7 @@ class CloudWatchLogGroupState(nixops.resources.ResourceState):
 
     def lookup_cloudwatch_log_group(self, log_group_name, next_token=None):
         if log_group_name:
-         response = self._conn.describe_log_groups(log_group_name_prefix=log_group_name,next_token=next_token)
+         response = self._client.describe_log_groups(log_group_name_prefix=log_group_name,next_token=next_token)
          if 'logGroups' in response:
           for log in response['logGroups']:
               if log_group_name == log['logGroupName']:
@@ -91,28 +92,25 @@ class CloudWatchLogGroupState(nixops.resources.ResourceState):
         return False, None
 
     def create(self, defn, check, allow_reboot, allow_recreate):
-        self.access_key_id = defn.config['accessKeyId'] or nixopsaws.ec2_utils.get_access_key_id()
-        if not self.access_key_id:
-            raise Exception("please set ‘accessKeyId’, $EC2_ACCESS_KEY or $AWS_ACCESS_KEY_ID")
-
         if self.state == self.UP and (self.log_group_name != defn.config['name'] or self.region != defn.config['region']):
             self.log("cloudwatch log group definition changed, recreating...")
             self._destroy()
-            self._conn = None
+            self._client = None
+            self._session = None
 
         self.region = defn.config['region']
-        self.connect()
+        self._connect()
         exist, arn = self.lookup_cloudwatch_log_group(log_group_name=self.log_group_name)
 
         if self.arn == None or not exist:
             self.retention_in_days = None
             self.log("creating cloudwatch log group ‘{0}’...".format(defn.config['name']))
-            log_group = self._conn.create_log_group(defn.config['name'])
+            log_group = self._client.create_log_group(defn.config['name'])
             exist, arn = self.lookup_cloudwatch_log_group(log_group_name=defn.config['name'])
 
         if self.retention_in_days != defn.config['retentionInDays']:
             self.log("setting the retention in days of '{0}' to '{1}'".format(defn.config['name'], defn.config['retentionInDays']))
-            self._conn.set_retention(log_group_name=defn.config['name'],retention_in_days=defn.config['retentionInDays'])
+            self._client.put_retention_policy(logGroupName=defn.config['name'],retentionInDays=defn.config['retentionInDays'])
 
         with self.depl._db:
             self.state = self.UP

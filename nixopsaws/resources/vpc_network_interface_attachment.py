@@ -42,6 +42,8 @@ class VPCNetworkInterfaceAttachmentState(nixops.resources.DiffEngineResourceStat
     def __init__(self, depl, name, id):
         nixops.resources.DiffEngineResourceState.__init__(self, depl, name, id)
         self._state = StateDict(depl, id)
+        self._session = None
+        self._client = None
         self.region = self._state.get('region', None)
         self.handle_create_eni_attachment = Handler(['region', 'networkInterfaceId', 'instanceId', 'deviceIndex' ],
                                           handle=self.realize_create_eni_attachment)
@@ -64,6 +66,12 @@ class VPCNetworkInterfaceAttachmentState(nixops.resources.DiffEngineResourceStat
     def get_definition_prefix(self):
         return "resources.vpcNetworkInterfaceAttachments."
 
+    def _connect(self):
+        if self._session: return
+        assert self._state["region"]
+        self._session = nixopsaws.ec2_utils.connect(self._state["region"], self.access_key_id)
+        self._client = self._session.client('ec2')
+
     def create_after(self, resources, defn):
         return {r for r in resources if
                 isinstance(r, nixopsaws.resources.vpc_network_interface.VPCNetworkInterfaceState) or
@@ -78,7 +86,8 @@ class VPCNetworkInterfaceAttachmentState(nixops.resources.DiffEngineResourceStat
 
     def wait_for_eni_attachment(self, eni_id):
         while True:
-            response = self.get_client().describe_network_interface_attribute(
+            self._connect()
+            response = self._client.describe_network_interface_attribute(
                 Attribute='attachment',
                 NetworkInterfaceId=eni_id)
             if response.get('Attachment', None):
@@ -118,7 +127,8 @@ class VPCNetworkInterfaceAttachmentState(nixops.resources.DiffEngineResourceStat
             eni_id = res._state['networkInterfaceId']
 
         self.log("attaching network interface {0} to instance {1}".format(eni_id, vm_id))
-        eni_attachment = self.get_client().attach_network_interface(
+        self._connect()
+        eni_attachment = self._client.attach_network_interface(
             DeviceIndex=config['deviceIndex'],
             InstanceId=vm_id,
             NetworkInterfaceId=eni_id)
@@ -135,7 +145,8 @@ class VPCNetworkInterfaceAttachmentState(nixops.resources.DiffEngineResourceStat
     def wait_for_eni_detachment(self):
         self.log("waiting for eni attachment {0} to be detached from {1}".format(self._state['attachmentId'], self._state["instanceId"]))
         while True:
-            response = self.get_client().describe_network_interface_attribute(
+            self._connect()
+            response = self._client.describe_network_interface_attribute(
                 Attribute='attachment',
                 NetworkInterfaceId=self._state['networkInterfaceId'])
             if response.get('Attachment', None):
@@ -155,7 +166,8 @@ class VPCNetworkInterfaceAttachmentState(nixops.resources.DiffEngineResourceStat
         if self.state == self.UP:
             self.log("detaching vpc network interface attachment {}".format(self._state['attachmentId']))
             try:
-                self.get_client().detach_network_interface(AttachmentId=self._state['attachmentId'],
+                self._connect()
+                self._client.detach_network_interface(AttachmentId=self._state['attachmentId'],
                                                       Force=True)
                 with self.depl._db:
                     self.state = self.STOPPING

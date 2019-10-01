@@ -34,6 +34,8 @@ class VPCEgressOnlyInternetGatewayState(nixops.resources.DiffEngineResourceState
     def __init__(self, depl, name, id):
         nixops.resources.DiffEngineResourceState.__init__(self, depl, name, id)
         self._state = StateDict(depl, id)
+        self._session = None
+        self._client = None
         self.handle_create_igw = Handler(['region', 'vpcId'], handle=self.realize_create_gtw)
 
     @classmethod
@@ -60,6 +62,12 @@ class VPCEgressOnlyInternetGatewayState(nixops.resources.DiffEngineResourceState
                 isinstance(r, nixopsaws.resources.vpc.VPCState) or
                 isinstance(r, nixopsaws.resources.elastic_ip.ElasticIPState)}
 
+    def _connect(self):
+        if self._session: return
+        assert self._state["region"]
+        self._session = nixopsaws.ec2_utils.connect(self._state["region"], self.access_key_id)
+        self._client = self._session.client('ec2')
+
     def realize_create_gtw(self, allow_recreate):
         config = self.get_defn()
 
@@ -79,7 +87,8 @@ class VPCEgressOnlyInternetGatewayState(nixops.resources.DiffEngineResourceState
             vpc_id = res._state['vpcId']
 
         self.log("creating egress only internet gateway in region {0}, vpc {1}".format(self._state['region'], vpc_id))
-        response = self.get_client().create_egress_only_internet_gateway(VpcId=vpc_id)
+        self._connect()
+        response = self._client.create_egress_only_internet_gateway(VpcId=vpc_id)
         igw_id = response['EgressOnlyInternetGateway']['EgressOnlyInternetGatewayId']
 
         with self.depl._db:
@@ -91,7 +100,8 @@ class VPCEgressOnlyInternetGatewayState(nixops.resources.DiffEngineResourceState
     def _destroy(self):
         if self.state != self.UP: return
         self.log("deleting egress only internet gateway {0}".format(self._state['egressOnlyInternetGatewayId']))
-        self.get_client().delete_egress_only_internet_gateway(EgressOnlyInternetGatewayId=self._state['egressOnlyInternetGatewayId'])
+        self._connect()
+        self._client.delete_egress_only_internet_gateway(EgressOnlyInternetGatewayId=self._state['egressOnlyInternetGatewayId'])
 
         with self.depl._db:
             self.state = self.MISSING

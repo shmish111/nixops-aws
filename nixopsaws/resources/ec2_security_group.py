@@ -2,10 +2,12 @@
 
 # Automatic provisioning of EC2 security groups.
 
-import boto.ec2.securitygroup
 import nixops.resources
 import nixops.util
 import nixopsaws.ec2_utils
+import ipaddress
+import boto3
+from botocore.exceptions import ClientError
 
 class EC2SecurityGroupDefinition(nixops.resources.ResourceDefinition):
     """Definition of an EC2 security group."""
@@ -24,6 +26,8 @@ class EC2SecurityGroupDefinition(nixops.resources.ResourceDefinition):
         self.security_group_description = xml.find("attrs/attr[@name='description']/string").get("value")
         self.region = xml.find("attrs/attr[@name='region']/string").get("value")
         self.access_key_id = xml.find("attrs/attr[@name='accessKeyId']/string").get("value")
+        self._session = None
+        self._client = None
 
         self.vpc_id = None
         if not xml.find("attrs/attr[@name='vpcId']/string") is None:
@@ -68,7 +72,8 @@ class EC2SecurityGroupState(nixops.resources.ResourceState):
 
     def __init__(self, depl, name, id):
         super(EC2SecurityGroupState, self).__init__(depl, name, id)
-        self._conn = None
+        self._session = None
+        self._client = None
 
     def show_type(self):
         s = super(EC2SecurityGroupState, self).show_type()
@@ -93,8 +98,10 @@ class EC2SecurityGroupState(nixops.resources.ResourceState):
                }
 
     def _connect(self):
-        if self._conn: return
-        self._conn = nixopsaws.ec2_utils.connect(self.region, self.access_key_id)
+        if self._session: return
+        assert self.region
+        self._session = nixopsaws.ec2_utils.connect(self.region, self.access_key_id)
+        self._client = self._session.client('ec2')
 
     def create(self, defn, check, allow_reboot, allow_recreate):
         def retry_notfound(f):
@@ -113,7 +120,6 @@ class EC2SecurityGroupState(nixops.resources.ResourceState):
 
         with self.depl._db:
             self.region = defn.region
-            self.access_key_id = defn.access_key_id or nixopsaws.ec2_utils.get_access_key_id()
             self.security_group_name = defn.security_group_name
             self.security_group_description = defn.security_group_description
             self.vpc_id = defn.vpc_id
@@ -125,26 +131,29 @@ class EC2SecurityGroupState(nixops.resources.ResourceState):
 
                 try:
                     if self.vpc_id:
-                        grp = self._conn.get_all_security_groups(group_ids=[ self.security_group_id ])[0]
+                        grp = self._client.describe_security_groups(GroupIds=[ self.security_group_id ])["SecurityGroups"][0]
                     else:
-                        grp = self._conn.get_all_security_groups([ defn.security_group_name ])[0]
+                        grp = self._client.describe_security_groups(GroupNames=[defn.security_group_name ])["SecurityGroups"][0]
                     self.state = self.UP
-                    self.security_group_id = grp.id
-                    self.security_group_description = grp.description
+                    self.security_group_id = grp["GroupId"]
+                    self.security_group_description = grp["Description"]
                     rules = []
-                    for rule in grp.rules:
-                        for grant in rule.grants:
-                            new_rule = [ rule.ip_protocol, int(rule.from_port), int(rule.to_port) ]
-                            if grant.cidr_ip:
-                                new_rule.append(grant.cidr_ip)
-                            else:
-                                group  = nixopsaws.ec2_utils.id_to_security_group_name(self._conn, grant.groupId, self.vpc_id) if self.vpc_id else grant.groupName
-                                new_rule.append(group)
-                                new_rule.append(grant.owner_id)
+                    for rule in grp["IpPermissions"]:
+                        for ipRange in rule["IpRanges"]:
+                            new_rule = [ rule["IpProtocol"], rule["FromPort"], rule["ToPort"] ]
+                            try:
+                                ipaddress.ip_address(ipRange["CidrIp"])
+                                new_rule.append(ipRange["CidrIp"])
+                            except ValueError:
+                                # "CidrIp" value is weirdly either a CIDR range or group ID IIUC
+                                # https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_IpRange.html
+                                inner_group = self._client.describe_security_groups(GroupIds=[ ipRange["CidrIp"] ])["SecurityGroups"][0]["GroupId"]
+                                new_rule.append(inner_group)
+                                new_rule.append(rule["OwnerId"])
                             rules.append(new_rule)
                     self.security_group_rules = rules
-                except boto.exception.EC2ResponseError as e:
-                    if e.error_code == u'InvalidGroup.NotFound':
+                except ClientError as e:
+                    if e.response['Error']['Code'] != 'InvalidGroup.NotFound':
                         self.state = self.MISSING
                     else:
                         raise
@@ -162,13 +171,17 @@ class EC2SecurityGroupState(nixops.resources.ResourceState):
             self._connect()
             try:
                 self.logger.log("creating EC2 security group ‘{0}’...".format(self.security_group_name))
-                grp = self._conn.create_security_group(self.security_group_name, self.security_group_description, defn.vpc_id)
-                self.security_group_id = grp.id
+                grp = self._client.create_security_group(
+                    GroupName=self.security_group_name,
+                    Description=self.security_group_description,
+                    VpcId=defn.vpc_id
+                    )
+                self.security_group_id = grp["GroupId"]
                 # If group creation succeeded, the group wasn't there before,
                 # in which case also its rules must be (re-)created below.
                 security_group_was_created = True
-            except boto.exception.EC2ResponseError as e:
-                if self.state != self.UNKNOWN or e.error_code != u'InvalidGroup.Duplicate':
+            except ClientError as e:
+                if self.state != self.UNKNOWN or e.response['Error']['Code'] != 'InvalidGroup.Duplicate':
                     raise
             self.state = self.STARTING #ugh
 
@@ -192,18 +205,24 @@ class EC2SecurityGroupState(nixops.resources.ResourceState):
             for rule in new_rules:
                 try:
                     if len(rule) == 4:
-                        retry_notfound(lambda: grp.authorize(ip_protocol=rule[0], from_port=rule[1], to_port=rule[2], cidr_ip=rule[3]))
+                        retry_notfound(lambda: self._client.authorize_security_group_ingress(
+                            CidrIp=rule[3],
+                            FromPort=rule[1],
+                            GroupId=grp["GroupId"],
+                            ToPort=rule[2],
+                            IpProtocol=rule[0]
+                        ))
                     else:
-                        args = {}
-                        args['owner_id']=rule[4]
-                        if self.vpc_id:
-                            args['id']=nixopsaws.ec2_utils.name_to_security_group(self._conn, rule[3], self.vpc_id)
-                        else:
-                            args['name']=rule[3]
-                        src_group = boto.ec2.securitygroup.SecurityGroup(**args)
-                        retry_notfound(lambda: grp.authorize(ip_protocol=rule[0], from_port=rule[1], to_port=rule[2], src_group=src_group))
-                except boto.exception.EC2ResponseError as e:
-                    if e.error_code != u'InvalidPermission.Duplicate':
+                        src_group = self._client.describe_security_groups(GroupIds=[rule[3]])["SecurityGroups"][0]
+                        retry_notfound(lambda: self._client.authorize_security_group_ingress(
+                            FromPort=rule[1],
+                            GroupId=grp["GroupId"],
+                            ToPort=rule[2],
+                            IpProtocol=rule[0],
+                            SourceSecurityGroupName=src_group["GroupName"]
+                        ))
+                except ClientError as e:
+                    if e.response['Error']['Code'] != 'InvalidGroup.Duplicate':
                         raise
 
         if old_rules:
@@ -213,39 +232,47 @@ class EC2SecurityGroupState(nixops.resources.ResourceState):
                 grp = self.get_security_group()
             for rule in old_rules:
                 if len(rule) == 4:
-                    grp.revoke(ip_protocol=rule[0], from_port=rule[1], to_port=rule[2], cidr_ip=rule[3])
+                    self._client.revoke_security_group_ingress(
+                        CidrIp=rule[3],
+                        FromPort=rule[1],
+                        GroupId=grp["GroupId"],
+                        ToPort=rule[2],
+                        IpProtocol=rule[0]
+                    )
                 else:
-                    args = {}
-                    args['owner_id']=rule[4]
-                    if self.vpc_id:
-                        args['id']=nixopsaws.ec2_utils.name_to_security_group(self._conn, rule[3], self.vpc_id)
-                    else:
-                        args['name']=rule[3]
-                    src_group = boto.ec2.securitygroup.SecurityGroup(**args)
-                    grp.revoke(ip_protocol=rule[0], from_port=rule[1], to_port=rule[2], src_group=src_group)
+                    src_group = self._client.describe_security_groups(GroupIds=[rule[3]])["SecurityGroups"][0]
+                    self._client.revoke_security_group_ingress(
+                        FromPort=rule[1],
+                        GroupId=grp["GroupId"],
+                        ToPort=rule[2],
+                        IpProtocol=rule[0],
+                        SourceSecurityGroupName=src_group["GroupName"]
+                    )
         self.security_group_rules = resolved_security_group_rules
 
         self.state = self.UP
 
     def get_security_group(self):
+        self._connect()
         if self.vpc_id:
-            return self._conn.get_all_security_groups(group_ids=[ self.security_group_id ])[0]
+            return self._client.describe_security_groups(GroupIds=[ self.security_group_id ])["SecurityGroups"][0]
         else:
-            return self._conn.get_all_security_groups(groupnames=[ self.security_group_name ])[0]
+            return self._client.describe_security_groups(GroupNames=[ self.security_group_name ])["SecurityGroups"][0]
 
     def after_activation(self, defn):
-        region = self.region
-        self._connect()
-        conn = self._conn
+        original_region = self.region
         for group in self.old_security_groups:
-            if group['region'] != region:
-                region = group['region']
-                conn = nixopsaws.ec2_utils.connect(region, self.access_key_id)
+            if group['region'] != original_region:
+                self.region = group['region']
             try:
-                conn.delete_security_group(group['name'])
-            except boto.exception.EC2ResponseError as e:
-                if e.error_code != u'InvalidGroup.NotFound':
+                self._connect()
+                current_group = self._client.describe_security_groups(Filters=[{'Name': 'group-name', 'Values': [group["name"]]}])["SecurityGroups"][0]
+                self._client.delete_security_group(GroupId=current_group['Id'])
+            except ClientError as e:
+                if e.response['Error']['Code'] != 'InvalidGroup.NotFound':
                     raise
+            finally:
+                self.region = original_region
         self.old_security_groups = []
 
     def destroy(self, wipe=False):
@@ -255,10 +282,10 @@ class EC2SecurityGroupState(nixops.resources.ResourceState):
             self._connect()
             try:
                 nixopsaws.ec2_utils.retry(
-                    lambda: self._conn.delete_security_group(group_id=self.security_group_id),
+                    lambda: self._client.delete_security_group(GroupId=self.security_group_id),
                     error_codes=['DependencyViolation'])
-            except boto.exception.EC2ResponseError as e:
-                if e.error_code != u'InvalidGroup.NotFound':
+            except ClientError as e:
+                if e.response['Error']['Code'] != 'InvalidGroup.NotFound':
                     raise
 
             self.state = self.MISSING

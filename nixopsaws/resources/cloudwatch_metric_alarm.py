@@ -82,10 +82,6 @@ class CloudwatchMetricAlarmState(nixops.resources.ResourceState):
         return self._boto_session
 
     def create(self, defn, check, allow_reboot, allow_recreate):
-        self.access_key_id = defn.access_key_id or nixopsaws.ec2_utils.get_access_key_id()
-
-        if not (self.access_key_id or os.environ['AWS_ACCESS_KEY_ID']):
-            raise Exception("please set ‘accessKeyId’ or $AWS_ACCESS_KEY_ID")
         client = self.boto_session(self.region or defn.region).client("cloudwatch")
 
         if self.alarm_name and self.alarm_name != defn.alarm_name:

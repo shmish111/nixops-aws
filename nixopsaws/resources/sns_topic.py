@@ -62,7 +62,7 @@ class SNSTopicState(nixops.resources.ResourceState):
     def get_definition_prefix(self):
         return "resources.snsTopics."
 
-    def connect(self):
+    def _connect(self):
         if self._conn: return
         assert self.region
         (access_key_id, secret_access_key) = nixopsaws.ec2_utils.fetch_aws_secret_key(self.access_key_id)
@@ -71,7 +71,7 @@ class SNSTopicState(nixops.resources.ResourceState):
 
     def _destroy(self):
         if self.state != self.UP: return
-        self.connect()
+        self._connect()
         self.log("destroying SNS topic ‘{0}’...".format(self.topic_name))
         self._conn.delete_topic(self.arn)
         with self.depl._db:
@@ -94,9 +94,7 @@ class SNSTopicState(nixops.resources.ResourceState):
         return False
 
     def create(self, defn, check, allow_reboot, allow_recreate):
-        self.access_key_id = defn.config['accessKeyId'] or nixopsaws.ec2_utils.get_access_key_id()
-        if not self.access_key_id:
-            raise Exception("please set ‘accessKeyId’, $EC2_ACCESS_KEY or $AWS_ACCESS_KEY_ID")
+        self.access_key_id = nixopsaws.ec2_utils.get_access_key_id(defn.config)
 
         arn = self.arn
         if self.state == self.UP and (self.topic_name != defn.config['name'] or self.region != defn.config['region']):
@@ -105,7 +103,7 @@ class SNSTopicState(nixops.resources.ResourceState):
             self._conn = None
 
         self.region = defn.config['region']
-        self.connect()
+        self._connect()
 
         if self.arn == None or not self.topic_exists(arn=self.arn):
             self.log("creating SNS topic ‘{0}’...".format(defn.config['name']))

@@ -79,7 +79,7 @@ class AWSVPNConnectionState(nixops.resources.DiffEngineResourceState, EC2CommonS
            vpn_gateway_id = res._state['vpnGatewayId']
 
        self.log("creating vpn connection between customer gateway {0} and vpn gateway {1}".format(customer_gtw_id, vpn_gateway_id))
-       vpn_connection = self.get_client().create_vpn_connection(
+       vpn_connection = self._client.create_vpn_connection(
             CustomerGatewayId=customer_gtw_id,
             VpnGatewayId=vpn_gateway_id,
             Type="ipsec.1",
@@ -100,13 +100,13 @@ class AWSVPNConnectionState(nixops.resources.DiffEngineResourceState, EC2CommonS
         config = self.get_defn()
         tags = config['tags']
         tags.update(self.get_common_tags())
-        self.get_client().create_tags(Resources=[self._state['vpnConnectionId']], Tags=[{"Key": k, "Value": tags[k]} for k in tags])
+        self._client.create_tags(Resources=[self._state['vpnConnectionId']], Tags=[{"Key": k, "Value": tags[k]} for k in tags])
 
     def _destroy(self):
         if self.state == self.UP:
             self.log("deleting vpn connection {}".format(self._state['vpnConnectionId']))
             try:
-                self.get_client().delete_vpn_connection(
+                self._client.delete_vpn_connection(
                     VpnConnectionId=self._state['vpnConnectionId'])
             except botocore.exceptions.ClientError as e:
                 if e.response['Error']['Code'] == "InvalidVpnConnectionID.NotFound":

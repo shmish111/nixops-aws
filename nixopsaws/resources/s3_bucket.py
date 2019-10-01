@@ -73,7 +73,7 @@ class S3BucketState(nixops.resources.ResourceState):
     def get_definition_prefix(self):
         return "resources.s3Buckets."
 
-    def connect(self):
+    def _connect(self):
         if self._conn: return
         (access_key_id, secret_access_key) = nixopsaws.ec2_utils.fetch_aws_secret_key(self.access_key_id)
         self._conn = boto3.session.Session(region_name=self.region if self.region != "US" else "us-east-1",
@@ -82,14 +82,12 @@ class S3BucketState(nixops.resources.ResourceState):
 
     def create(self, defn, check, allow_reboot, allow_recreate):
 
-        self.access_key_id = defn.access_key_id or nixopsaws.ec2_utils.get_access_key_id()
-        if not self.access_key_id:
-            raise Exception("please set ‘accessKeyId’, $EC2_ACCESS_KEY or $AWS_ACCESS_KEY_ID")
+        self.access_key_id = nixopsaws.ec2_utils.get_access_key_id(defn.config)
 
         if len(defn.bucket_name) > 63:
             raise Exception("bucket name ‘{0}’ is longer than 63 characters.".format(defn.bucket_name))
 
-        self.connect()
+        self._connect()
         s3client = self._conn.client('s3')
         if check or self.state != self.UP:
 
@@ -175,7 +173,7 @@ class S3BucketState(nixops.resources.ResourceState):
                           " persistOnDestroy = true".format(self.bucket_name))
                 return True;
 
-            self.connect()
+            self._connect()
             try:
                 self.log("destroying S3 bucket ‘{0}’...".format(self.bucket_name))
                 bucket = self._conn.resource('s3').Bucket(self.bucket_name)

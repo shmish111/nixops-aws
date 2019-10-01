@@ -67,9 +67,7 @@ class ElasticIPState(nixops.resources.ResourceState):
 
     def create(self, defn, check, allow_reboot, allow_recreate):
 
-        self.access_key_id = defn.config['accessKeyId'] or nixopsaws.ec2_utils.get_access_key_id()
-        if not self.access_key_id:
-            raise Exception("please set ‘accessKeyId’, $EC2_ACCESS_KEY or $AWS_ACCESS_KEY_ID")
+        self.access_key_id = nixopsaws.ec2_utils.get_access_key_id(defn.config)
 
         if self.state == self.UP and (self.region != defn.config['region']):
             raise Exception("changing the region of an elastic IP address is not supported")

@@ -2,6 +2,9 @@
 
 # Automatic provisioning of EC2 key pairs.
 
+import tempfile
+import os
+import subprocess
 import nixops.util
 import nixops.resources
 import nixopsaws.ec2_utils
@@ -46,7 +49,8 @@ class EC2KeyPairState(nixops.resources.ResourceState):
 
     def __init__(self, depl, name, id):
         nixops.resources.ResourceState.__init__(self, depl, name, id)
-        self._conn = None
+        self._session = None
+        self._client = None
 
 
     def show_type(self):
@@ -64,43 +68,36 @@ class EC2KeyPairState(nixops.resources.ResourceState):
         return "resources.ec2KeyPairs."
 
 
-    def connect(self):
-        if self._conn: return
-        self._conn = nixopsaws.ec2_utils.connect(self.region, self.access_key_id)
+    def _connect(self):
+        if self._client: return
+        self._session = nixopsaws.ec2_utils.connect(self.region, self.access_key_id)
+        self._client = self._session.client('ec2')
 
 
     def create(self, defn, check, allow_reboot, allow_recreate):
 
-        self.access_key_id = defn.access_key_id or nixopsaws.ec2_utils.get_access_key_id()
-        if not self.access_key_id:
-            raise Exception("please set ‘accessKeyId’, $EC2_ACCESS_KEY or $AWS_ACCESS_KEY_ID")
+        self.region = defn.region
+        self._connect()
 
-        # Generate the key pair locally.
+        # Generate the key pair
         if not self.public_key:
-            (private, public) = nixops.util.create_key_pair(type="rsa") # EC2 only supports RSA keys.
+            self.log("generate key pair %s" % defn.keypair_name)
+            response = self._client.create_key_pair(KeyName=defn.keypair_name,DryRun=False)
+            private_key = response["KeyMaterial"]
+            temp = tempfile.NamedTemporaryFile(mode='w+t',delete=False)
+            temp.writelines(private_key)
+            temp.close()
+            public_key = subprocess.check_output(["ssh-keygen", "-y", "-f", temp.name],stderr=subprocess.STDOUT)
+            os.remove(temp.name)
+            self.log("generated key pair")
             with self.depl._db:
-                self.public_key = public
-                self.private_key = private
+                self.keypair_name = response["KeyName"]
+                self.public_key = public_key
+                self.private_key = private_key
 
-        # Upload the public key to EC2.
         if check or self.state != self.UP:
-
-            self.region = defn.region
-            self.connect()
-
-            # Sometimes EC2 DescribeKeypairs return empty list on invalid
-            # identifiers, which results in a IndexError exception from within boto,
-            # work around that until we figure out what is causing this.
-            try:
-                kp = self._conn.get_key_pair(defn.keypair_name)
-            except IndexError as e:
-                kp = None
-
-            # Don't re-upload the key if it exists and we're just checking.
-            if not kp or self.state != self.UP:
-                if kp: self._conn.delete_key_pair(defn.keypair_name)
-                self.log("uploading EC2 key pair ‘{0}’...".format(defn.keypair_name))
-                self._conn.import_key_pair(defn.keypair_name, self.public_key)
+            kp = self._client.describe_key_pairs(KeyNames=[defn.keypair_name])["KeyPairs"][0]["KeyName"]
+            self.log("found keypair {0}".format(kp))
 
             with self.depl._db:
                 self.state = self.UP
@@ -123,15 +120,15 @@ class EC2KeyPairState(nixops.resources.ResourceState):
 
         if self.state == self.UP:
             self.log("deleting EC2 key pair ‘{0}’...".format(self.keypair_name))
-            self.connect()
-            self._conn.delete_key_pair(self.keypair_name)
+            self._connect()
+            self._client.delete_key_pair(KeyName=self.keypair_name)
 
         return True
 
     def check(self):
-        self.connect()
+        self._connect()
         try:
-            kp = self._conn.get_key_pair(self.keypair_name)
+            kp = self._client.get_key_pair(self.keypair_name)
         except IndexError as e:
             kp = None
         if kp is None:

@@ -69,7 +69,7 @@ class SQSQueueState(nixops.resources.ResourceState):
         return self.queue_name
 
 
-    def connect(self):
+    def _connect(self):
         if self._conn: return
         assert self.region
         (access_key_id, secret_access_key) = nixopsaws.ec2_utils.fetch_aws_secret_key(self.access_key_id)
@@ -79,7 +79,7 @@ class SQSQueueState(nixops.resources.ResourceState):
 
     def _destroy(self):
         if self.state != self.UP: return
-        self.connect()
+        self._connect()
         q = self._conn.lookup(self.queue_name)
         if q:
             self.log("destroying SQS queue ‘{0}’...".format(self.queue_name))
@@ -96,9 +96,7 @@ class SQSQueueState(nixops.resources.ResourceState):
 
     def create(self, defn, check, allow_reboot, allow_recreate):
 
-        self.access_key_id = defn.access_key_id or nixopsaws.ec2_utils.get_access_key_id()
-        if not self.access_key_id:
-            raise Exception("please set ‘accessKeyId’, $EC2_ACCESS_KEY or $AWS_ACCESS_KEY_ID")
+        self.access_key_id = nixopsaws.ec2_utils.get_access_key_id(defn.config)
 
         if self.state == self.UP and (self.queue_name != defn.queue_name or self.region != defn.region):
             self.log("queue definition changed, recreating...")
@@ -108,7 +106,7 @@ class SQSQueueState(nixops.resources.ResourceState):
         if check or self.state != self.UP:
 
             self.region = defn.region
-            self.connect()
+            self._connect()
 
             q = self._conn.lookup(defn.queue_name)
 

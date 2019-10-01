@@ -98,9 +98,7 @@ class EBSVolumeState(nixops.resources.ResourceState, ec2_common.EC2CommonState):
 
     def create(self, defn, check, allow_reboot, allow_recreate):
 
-        self.access_key_id = defn.config['accessKeyId'] or nixopsaws.ec2_utils.get_access_key_id()
-        if not self.access_key_id:
-            raise Exception("please set ‘accessKeyId’, $EC2_ACCESS_KEY or $AWS_ACCESS_KEY_ID")
+        self.access_key_id = nixopsaws.ec2_utils.get_access_key_id(defn.config)
 
         self.connect(defn.config['region'])
 

@@ -39,6 +39,8 @@ class VPCRouteTableState(nixops.resources.DiffEngineResourceState, EC2CommonStat
 
     def __init__(self, depl, name, id):
         nixops.resources.DiffEngineResourceState.__init__(self, depl, name, id)
+        self._session = None
+        self._client = None
         self._state = StateDict(depl, id)
         self.region = self._state.get('region', None)
         self.handle_create_route_table = Handler(['region', 'vpcId'], handle=self.realize_create_route_table)
@@ -66,6 +68,12 @@ class VPCRouteTableState(nixops.resources.DiffEngineResourceState, EC2CommonStat
     def get_definition_prefix(self):
         return "resources.vpcRouteTables."
 
+    def _connect(self):
+        if self._session: return
+        assert self._state["region"]
+        self._session = nixopsaws.ec2_utils.connect(self._state["region"], self.access_key_id)
+        self._client = self._session.client('ec2')
+
     def create_after(self, resources, defn):
         return {r for r in resources if
                 isinstance(r, nixopsaws.resources.vpc.VPCState) or
@@ -89,7 +97,8 @@ class VPCRouteTableState(nixops.resources.DiffEngineResourceState, EC2CommonStat
             vpc_id = res._state['vpcId']
 
         self.log("creating route table in vpc {}".format(vpc_id))
-        route_table = self.get_client().create_route_table(VpcId=vpc_id)
+        self._connect()
+        route_table = self._client.create_route_table(VpcId=vpc_id)
 
         with self.depl._db:
             self.state = self.UP
@@ -98,6 +107,7 @@ class VPCRouteTableState(nixops.resources.DiffEngineResourceState, EC2CommonStat
 
     def realize_propagate_vpn_gtws(self, allow_recreate):
         config = self.get_defn()
+        self._connect()
         old_vgws = self._state.get('propagatingVgws', [])
         new_vgws = []
 
@@ -113,12 +123,12 @@ class VPCRouteTableState(nixops.resources.DiffEngineResourceState, EC2CommonStat
 
         for vgw in to_disable:
             self.log("disabling virtual gateway route propagation for {}".format(vgw))
-            self.get_client().disable_vgw_route_propagation(
+            self._client.disable_vgw_route_propagation(
                 GatewayId=vgw,
                 RouteTableId=self._state['routeTableId'])
         for vgw in to_enable:
             self.log("enabling virtual gateway route propagation for {}".format(vgw))
-            self.get_client().enable_vgw_route_propagation(
+            self._client.enable_vgw_route_propagation(
                 GatewayId=vgw,
                 RouteTableId=self._state['routeTableId'])
 
@@ -129,13 +139,15 @@ class VPCRouteTableState(nixops.resources.DiffEngineResourceState, EC2CommonStat
         config = self.get_defn()
         tags = config['tags']
         tags.update(self.get_common_tags())
-        self.get_client().create_tags(Resources=[self._state['routeTableId']], Tags=[{"Key": k, "Value": tags[k]} for k in tags])
+        self._connect()
+        self._client.create_tags(Resources=[self._state['routeTableId']], Tags=[{"Key": k, "Value": tags[k]} for k in tags])
 
     def _destroy(self):
         if self.state != self.UP: return
         self.log("deleting route table {}".format(self._state['routeTableId']))
         try:
-            self.get_client().delete_route_table(RouteTableId=self._state['routeTableId'])
+            self._connect()
+            self._client.delete_route_table(RouteTableId=self._state['routeTableId'])
         except botocore.exceptions.ClientError as error:
             if error.response['Error']['Code'] == "InvalidRouteTableID.NotFound":
                 self.warn("route table {} was already deleted".format(self._state['routeTableId']))
